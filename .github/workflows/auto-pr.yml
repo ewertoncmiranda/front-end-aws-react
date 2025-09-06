@@ -1,0 +1,89 @@
+# .github/workflows/auto-pr-feature-to-develop.yml
+name: Auto PR (feature -> develop)
+
+on:
+  push:
+    branches:
+      - 'feature/*'
+      - 'feature/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-pr-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descobrir nome da branch
+        run: echo "BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+
+      - name: Criar PR se não existir
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const base = 'develop';
+            const branch = process.env.BRANCH;
+
+            // Checa se a base existe
+            try {
+              await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: base
+              });
+            } catch (e) {
+              core.warning(`Branch base '${base}' não existe. Nada a fazer.`);
+              return;
+            }
+
+            // Evita duplicar PR
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${branch}`,
+              base
+            });
+            if (prs.length > 0) {
+              core.info(`PR já existe: #${prs[0].number} ${prs[0].html_url}`);
+              return;
+            }
+
+            const cleanName = branch.replace(/^feature[\/-]?/, '');
+            const title = `feat(${cleanName}): ${branch} → ${base}`;
+            const body = [
+              `PR automático criado pelo GitHub Actions.`,
+              `- Origem: \`${branch}\``,
+              `- Destino: \`${base}\``,
+              `- Autor: @${context.actor}`
+            ].join('\n');
+
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              head: branch,
+              base,
+              body,
+              draft: false
+            });
+
+            // (Opcional) adicionar labels
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['auto-pr', 'feature']
+              });
+            } catch (_) {}
+
+            core.summary.addHeading('Pull Request criado');
+            core.summary.addRaw(`[#${pr.number}](${pr.html_url})\n`);
+            await core.summary.write();
